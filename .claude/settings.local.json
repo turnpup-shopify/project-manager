@@ -6,7 +6,8 @@
       "Bash(npm install @vercel/kv)",
       "Bash(npm uninstall @vercel/kv && npm install @upstash/redis)",
       "Bash(npm run build 2>&1)",
-      "Bash(ls /Users/alexturney/scripts/project-manager/.env* 2>/dev/null || echo \"none\")"
+      "Bash(ls /Users/alexturney/scripts/project-manager/.env* 2>/dev/null || echo \"none\")",
+      "Bash(npm uninstall @upstash/redis && npm install @vercel/blob)"
     ]
   }
 }
