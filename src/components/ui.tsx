@@ -7,6 +7,7 @@ import {
   type ButtonHTMLAttributes,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import { IconX } from "./icons";
 
 // --- Button -----------------------------------------------------------------
@@ -111,24 +112,43 @@ export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
 // --- Popover / dropdown menu ------------------------------------------------
 export function Menu({ trigger, children, align = "right" }: { trigger: ReactNode; children: (close: () => void) => ReactNode; align?: "left" | "right" }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left?: number; right?: number }>({ top: 0 });
+
   useEffect(() => {
     if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!triggerRef.current?.contains(t) && !menuRef.current?.contains(t)) setOpen(false);
     };
-    window.addEventListener("mousedown", onClick);
-    return () => window.removeEventListener("mousedown", onClick);
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
   }, [open]);
+
+  function handleToggle() {
+    if (!triggerRef.current) return;
+    const r = triggerRef.current.getBoundingClientRect();
+    setPos(
+      align === "right"
+        ? { top: r.bottom + 4, right: window.innerWidth - r.right }
+        : { top: r.bottom + 4, left: r.left }
+    );
+    setOpen((v) => !v);
+  }
+
   return (
-    <div className="relative" ref={ref}>
-      <div onClick={() => setOpen((v) => !v)}>{trigger}</div>
-      {open && (
+    <div ref={triggerRef}>
+      <div onClick={handleToggle}>{trigger}</div>
+      {open && typeof document !== "undefined" && createPortal(
         <div
-          className={`animate-fadein absolute z-40 mt-1 min-w-[180px] rounded-lg border border-border bg-surface p-1 shadow-xl ${align === "right" ? "right-0" : "left-0"}`}
+          ref={menuRef}
+          className="animate-fadein fixed z-[9999] min-w-[180px] rounded-lg border border-border bg-surface p-1 shadow-xl"
+          style={pos}
         >
           {children(() => setOpen(false))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
