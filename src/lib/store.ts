@@ -21,6 +21,8 @@ const UNDO_LIMIT = 30;
 
 // ---------------------------------------------------------------------------
 // Persistence (manual, so sandbox/undo transient state never leaks to disk).
+// localStorage is a write-through cache for instant loads + offline fallback.
+// Vercel KV (via /api/plan) is the source of truth for cross-device sync.
 // ---------------------------------------------------------------------------
 function loadFromDisk(): PlanState | null {
   if (typeof window === "undefined") return null;
@@ -43,6 +45,31 @@ function saveToDisk(plan: PlanState) {
   } catch {
     /* storage full / unavailable — non-fatal for the session */
   }
+}
+
+async function loadFromRemote(): Promise<PlanState | null> {
+  try {
+    const res = await fetch("/api/plan");
+    if (!res.ok) return null;
+    const data = await res.json() as PersistedFile | null;
+    return data?.plan ?? null;
+  } catch {
+    return null;
+  }
+}
+
+let _saveTimer: ReturnType<typeof setTimeout> | null = null;
+function saveToRemote(plan: PlanState) {
+  if (typeof window === "undefined") return;
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    const file: PersistedFile = { version: 1, exportedAt: new Date().toISOString(), plan };
+    fetch("/api/plan", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(file),
+    }).catch(() => {/* non-fatal */});
+  }, 1000);
 }
 
 function clone<T>(v: T): T {
@@ -146,6 +173,7 @@ export const useStore = create<StoreState>((set, get) => {
         undoStack: [...state.undoStack, state.committed].slice(-UNDO_LIMIT),
       });
       saveToDisk(rebased);
+      saveToRemote(rebased);
     }
   }
 
@@ -158,14 +186,35 @@ export const useStore = create<StoreState>((set, get) => {
 
     hydrate: () => {
       if (get().hydrated) return;
-      const loaded = loadFromDisk();
-      if (loaded) {
-        set({ committed: loaded, hydrated: true });
-      } else {
-        const seed = rebaseline(samplePlan());
-        set({ committed: seed, hydrated: true });
-        saveToDisk(seed);
-      }
+      // Show cached data immediately so the UI isn't blank while we fetch.
+      const local = loadFromDisk();
+      if (local) set({ committed: local });
+      // Fetch remote (source of truth) and reconcile.
+      loadFromRemote().then((remote) => {
+        if (remote) {
+          set({ committed: remote, hydrated: true });
+          saveToDisk(remote);
+        } else if (local) {
+          set({ hydrated: true });
+          saveToRemote(local); // push local up to KV on first cross-device visit
+        } else {
+          const seed = rebaseline(samplePlan());
+          set({ committed: seed, hydrated: true });
+          saveToDisk(seed);
+          saveToRemote(seed);
+        }
+      }).catch(() => {
+        // API unreachable — fall back to local or seed
+        if (!get().hydrated) {
+          if (local) {
+            set({ hydrated: true });
+          } else {
+            const seed = rebaseline(samplePlan());
+            set({ committed: seed, hydrated: true });
+            saveToDisk(seed);
+          }
+        }
+      });
     },
 
     active: () => get().sandbox ?? get().committed,
@@ -182,6 +231,7 @@ export const useStore = create<StoreState>((set, get) => {
         undoStack: [...s.undoStack, s.committed].slice(-UNDO_LIMIT),
       }));
       saveToDisk(rebased);
+      saveToRemote(rebased);
     },
     discardSandbox: () => set({ sandbox: null }),
 
@@ -192,6 +242,7 @@ export const useStore = create<StoreState>((set, get) => {
       const prev = stack[stack.length - 1];
       set({ committed: prev, undoStack: stack.slice(0, -1), sandbox: null });
       saveToDisk(prev);
+      saveToRemote(prev);
     },
 
     setView: (v) => set({ view: v }),
@@ -204,6 +255,7 @@ export const useStore = create<StoreState>((set, get) => {
         undoStack: [...s.undoStack, s.committed].slice(-UNDO_LIMIT),
       }));
       saveToDisk(rebased);
+      saveToRemote(rebased);
     },
     resetToSample: () => get().replaceAll(samplePlan()),
     resetToEmpty: () => get().replaceAll(emptyPlan()),
